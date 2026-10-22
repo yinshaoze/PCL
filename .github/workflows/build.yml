@@ -1,4 +1,6 @@
+
 name: Build
+
 on:
   push:
     paths:
@@ -14,12 +16,11 @@ jobs:
   build:
     name: Build
     runs-on: windows-latest
-    strategy:  
-       matrix:  
-         configuration: [Debug, Release]
+    strategy:
+      matrix:
+        configuration: [Debug, Release]
 
     steps:
-
     - name: Checkout
       uses: actions/checkout@v6
       with:
@@ -29,16 +30,16 @@ jobs:
     - name: Set Describe
       shell: bash
       run: |
-          describe=`git describe --tags --always`
-          echo "describe=$describe" >> $GITHUB_ENV
+        describe=`git describe --tags --always`
+        echo "describe=$describe" >> $GITHUB_ENV
 
     - name: Setup MSBuild.exe
       uses: microsoft/setup-msbuild@v3
       with:
         msbuild-architecture: x64
-    
+
     - name: Update Help
-      run:  |
+      run: |
         Set-Location ..
         git clone https://github.com/LTCatt/PCL2Help.git -b master --single-branch --depth 1
         Set-Location PCL2Help
@@ -49,13 +50,83 @@ jobs:
         Remove-Item PCL2Help -Recurse -Force
         Set-Location ${{ GITHUB.WORKSPACE }}
 
-
-    - name: Replace
+    - name: Replace Secrets and Commit Hash
+      shell: pwsh
+      env:
+        CLIENT_ID: ${{ secrets.CLIENT_ID }}
+        CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+        COMMIT_HASH: ${{ github.sha }}
       run: |
-        (gc "Plain Craft Launcher 2\Modules\ModSecret.vb") -replace 'Public OAuthClientId As String = If(Environment.GetEnvironmentVariable("PCL_MS_CLIENT_ID"), "")', 'Public OAuthClientId As String = If(Environment.GetEnvironmentVariable("PCL_MS_CLIENT_ID"), "${{ secrets.CLIENT_ID }}")' | Out-File "Plain Craft Launcher 2\Modules\ModSecret.vb"
-        (gc "Plain Craft Launcher 2\Modules\ModSecret.vb") -replace 'Public CurseForgeAPIKey As String = If(Environment.GetEnvironmentVariable("PCL_CURSEFORGE_API_KEY"), "")', 'Public CurseForgeAPIKey As String = If(Environment.GetEnvironmentVariable("PCL_CURSEFORGE_API_KEY"), "${{ secrets.CURSEFORGE_API_KEY }}")' | Out-File "Plain Craft Launcher 2\Modules\ModSecret.vb"
-        (gc "Plain Craft Launcher 2\Modules\Base\ModBase.vb") -replace 'Public Const CommitHash As String = ""', 'Public Const CommitHash As String = "${{ github.sha }}"' | Out-File "Plain Craft Launcher 2\Modules\Base\ModBase.vb"
-        
+        $secretFile = "Plain Craft Launcher 2\Modules\ModSecret.vb"
+        $baseFile = "Plain Craft Launcher 2\Modules\Base\ModBase.vb"
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+
+        $content = [System.IO.File]::ReadAllText($secretFile)
+
+        # Replace OAuth Client ID if the repository secret is available.
+        $oldClient = 'Public OAuthClientId As String = If(Environment.GetEnvironmentVariable("PCL_MS_CLIENT_ID"), "")'
+
+        if (-not [string]::IsNullOrWhiteSpace($env:CLIENT_ID)) {
+          $escapedClient = $env:CLIENT_ID.Replace('"', '""')
+          $newClient = 'Public OAuthClientId As String = If(Environment.GetEnvironmentVariable("PCL_MS_CLIENT_ID"), "' + $escapedClient + '")'
+
+          if ($content.Contains($oldClient)) {
+            $content = $content.Replace($oldClient, $newClient)
+            Write-Host "OAuth Client ID replacement succeeded."
+          }
+          elseif (-not $content.Contains($newClient)) {
+            throw "OAuthClientId definition did not match the expected source."
+          }
+        }
+        else {
+          Write-Host "CLIENT_ID is unavailable; using the source default."
+        }
+
+        # Replace CurseForge API key if the repository secret is available.
+        $oldKey = 'Public CurseForgeAPIKey As String = If(Environment.GetEnvironmentVariable("PCL_CURSEFORGE_API_KEY"), "")'
+
+        if (-not [string]::IsNullOrWhiteSpace($env:CURSEFORGE_API_KEY)) {
+          $escapedKey = $env:CURSEFORGE_API_KEY.Replace('"', '""')
+          $newKey = 'Public CurseForgeAPIKey As String = If(Environment.GetEnvironmentVariable("PCL_CURSEFORGE_API_KEY"), "' + $escapedKey + '")'
+
+          if ($content.Contains($oldKey)) {
+            $content = $content.Replace($oldKey, $newKey)
+            Write-Host "CurseForge API key replacement succeeded."
+          }
+          elseif (-not $content.Contains($newKey)) {
+            throw "CurseForgeAPIKey definition did not match the expected source."
+          }
+        }
+        else {
+          Write-Host "CURSEFORGE_API_KEY is unavailable; using the source default."
+        }
+
+        [System.IO.File]::WriteAllText(
+          $secretFile,
+          $content,
+          $utf8NoBom
+        )
+
+        # Replace commit hash.
+        $baseContent = [System.IO.File]::ReadAllText($baseFile)
+        $oldHash = 'Public Const CommitHash As String = ""'
+        $newHash = 'Public Const CommitHash As String = "' + $env:COMMIT_HASH + '"'
+
+        if ($baseContent.Contains($oldHash)) {
+          $baseContent = $baseContent.Replace($oldHash, $newHash)
+        }
+        elseif (-not $baseContent.Contains($newHash)) {
+          throw "CommitHash definition did not match the expected source."
+        }
+
+        [System.IO.File]::WriteAllText(
+          $baseFile,
+          $baseContent,
+          $utf8NoBom
+        )
+
+        Write-Host "Source updates completed."
+
     - name: Restore NuGet Packages
       run: dotnet restore PCLCS\PCLCS.csproj
 
@@ -66,4 +137,4 @@ jobs:
       uses: actions/upload-artifact@v7
       with:
         name: ${{ matrix.configuration }} ${{ env.describe }}
-        path: Plain Craft Launcher 2\obj\${{ matrix.configuration }}\Plain Craft Launcher 2.exe
+        path: Plain Craft Launcher 2\obj\\${{ matrix.configuration }}\Plain Craft Launcher 2.exe
